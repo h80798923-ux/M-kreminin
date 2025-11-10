@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MeetChat Full</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, collection, addDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyCDdfc_NO1MPfGXM7w-INPu5y2IXZAvbzo",
+  authDomain: "meetchat-ba2f9.firebaseapp.com",
+  projectId: "meetchat-ba2f9",
+  storageBucket: "meetchat-ba2f9.firebasestorage.app",
+  messagingSenderId: "290777359255",
+  appId: "1:290777359255:web:55ce3417379381ebc35ad2"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const provider = new GoogleAuthProvider();
+const db = getFirestore(app);
+
+let currentUser = null;
+
+// ---------- Login & Logout ----------
+async function login() {
+  try {
+    const result = await signInWithPopup(auth, provider);
+    currentUser = result.user;
+    document.getElementById("loginDiv").style.display = "none";
+    document.getElementById("profileSetupDiv").style.display = "flex";
+  } catch (err) { console.error(err); }
+}
+
+function logout() {
+  signOut(auth);
+  currentUser = null;
+  document.getElementById("appDiv").style.display = "none";
+  document.getElementById("loginDiv").style.display = "flex";
+}
+
+// ---------- Profile Setup ----------
+async function saveProfile() {
+  const gender = document.getElementById("gender").value;
+  const interested = document.getElementById("interested").value;
+  const bio = document.getElementById("bio").value;
+
+  await setDoc(doc(db, "users", currentUser.uid), {
+    name: currentUser.displayName,
+    email: currentUser.email,
+    photoURL: currentUser.photoURL,
+    gender,
+    interested,
+    bio
+  }, { merge: true });
+
+  document.getElementById("profileSetupDiv").style.display = "none";
+  document.getElementById("appDiv").style.display = "flex";
+  loadCards();
+  loadMatches();
+}
+
+// ---------- Swipe Cards ----------
+async function loadCards() {
+  const cardsDiv = document.getElementById("cards");
+  cardsDiv.innerHTML = "";
+
+  const usersSnap = await collection(db, "users");
+  const q = query(usersSnap, where("uid", "!=", currentUser.uid));
+  const querySnapshot = await getDocs(usersSnap);
+
+  querySnapshot.forEach(docSnap => {
+    const user = docSnap.data();
+    if (docSnap.id !== currentUser.uid) {
+      const card = document.createElement("div");
+      card.className = "card w-80 h-96 bg-white rounded-xl shadow-lg p-4 m-2 relative cursor-pointer transition-transform duration-300";
+      card.innerHTML = `
+        <img src="${user.photoURL || ''}" class="w-full h-48 object-cover rounded-md mb-2">
+        <h2 class="text-xl font-bold">${user.name}</h2>
+        <p>${user.bio || ''}</p>
+        <div class="flex justify-around mt-4 absolute bottom-4 w-full">
+          <button class="text-red-500 text-3xl">❌</button>
+          <button class="text-green-500 text-3xl">❤️</button>
+        </div>
+      `;
+      cardsDiv.appendChild(card);
+
+      // Swipe animation (click simulation)
+      const heartBtn = card.querySelector(".text-green-500");
+      heartBtn.addEventListener("click", async () => {
+        await handleLike(docSnap.id);
+        card.style.transform = "translateX(200%) rotate(30deg)";
+        setTimeout(() => card.remove(), 300);
+      });
+      const noBtn = card.querySelector(".text-red-500");
+      noBtn.addEventListener("click", () => {
+        card.style.transform = "translateX(-200%) rotate(-30deg)";
+        setTimeout(() => card.remove(), 300);
+      });
+    }
+  });
+}
+
+// ---------- Handle Like & Match ----------
+async function handleLike(targetUid) {
+  const matchRef = doc(db, "matches", `${currentUser.uid}_${targetUid}`);
+  await setDoc(matchRef, {
+    users: [currentUser.uid, targetUid],
+    likedBy: [currentUser.uid]
+  }, { merge: true });
+
+  // Reverse check
+  const reverseRef = doc(db, "matches", `${targetUid}_${currentUser.uid}`);
+  const reverseSnap = await getDoc(reverseRef);
+  if (reverseSnap.exists() && reverseSnap.data().likedBy.includes(targetUid)) {
+    alert(`🎉 You matched with ${targetUid}!`);
+    loadMatches();
+  }
+}
+
+// ---------- Real-Time Chat ----------
+function loadMatches() {
+  const matchesDiv = document.getElementById("matches");
+  matchesDiv.innerHTML = "";
+
+  onSnapshot(collection(db, "matches"), snapshot => {
+    snapshot.forEach(docSnap => {
+      const data = docSnap.data();
+      if (data.users.includes(currentUser.uid) && data.likedBy.length === 2) {
+        const otherUid = data.users.find(u => u !== currentUser.uid);
+        const btn = document.createElement("button");
+        btn.textContent = `Chat with ${otherUid}`;
+        btn.className = "bg-blue-500 text-white px-4 py-2 m-1 rounded";
+        btn.onclick = () => openChat(docSnap.id, otherUid);
+        matchesDiv.appendChild(btn);
+      }
+    });
+  });
+}
+
+function openChat(matchId, otherUid) {
+  document.getElementById("chatDiv").style.display = "block";
+  const chatMessages = document.getElementById("chatMessages");
+  chatMessages.innerHTML = "";
+  const chatInput = document.getElementById("chatInput");
+
+  onSnapshot(doc(db, "messages", matchId), docSnap => {
+    const data = docSnap.data();
+    chatMessages.innerHTML = "";
+    if (data && data.messages) {
+      data.messages.forEach(msg => {
+        const p = document.createElement("p");
+        p.textContent = `${msg.sender === currentUser.uid ? 'You' : otherUid}: ${msg.text}`;
+        chatMessages.appendChild(p);
+      });
+    }
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  });
+
+  chatInput.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = chatInput.msg.value;
+    if (!text) return;
+    const msgDoc = doc(db, "messages", matchId);
+    const snap = await getDoc(msgDoc);
+    let messages = [];
+    if (snap.exists()) messages = snap.data().messages || [];
+    messages.push({ sender: currentUser.uid, text, timestamp: new Date() });
+    await setDoc(msgDoc, { messages });
+    chatInput.msg.value = "";
+  };
+}
+
+</script>
+</head>
+<body class="bg-gray-100 h-screen flex flex-col">
+
+<!-- Login -->
+<div id="loginDiv" class="flex flex-col items-center justify-center h-screen">
+  <h1 class="text-4xl font-bold mb-6">MeetChat</h1>
+  <button onclick="login()" class="bg-blue-500 text-white px-6 py-3 rounded-lg text-lg">Sign in with Google</button>
+</div>
+
+<!-- Profile Setup -->
+<div id="profileSetupDiv" class="hidden flex flex-col items-center justify-center h-screen gap-4">
+  <h2 class="text-2xl font-bold">Setup Profile</h2>
+  <select id="gender" class="border p-2 rounded">
+    <option value="">Select Gender</option>
+    <option value="Male">Male</option>
+    <option value="Female">Female</option>
+  </select>
+  <select id="interested" class="border p-2 rounded">
+    <option value="">Interested In</option>
+    <option value="MLM">Men Love Men</option>
+    <option value="WLW">Women Love Women</option>
+    <option value="WLM">Women Love Men</option>
+  </select>
+  <textarea id="bio" placeholder="Bio" class="border p-2 rounded"></textarea>
+  <button onclick="saveProfile()" class="bg-green-500 text-white px-4 py-2 rounded">Save Profile</button>
+</div>
+
+<!-- App -->
+<div id="appDiv" class="hidden flex flex-col h-screen">
+  <!-- Menu -->
+  <nav class="fixed bottom-0 w-full bg-white shadow-lg flex justify-around p-2">
+    <button class="font-bold text-blue-500" onclick="document.getElementById('cards').style.display='flex';document.getElementById('matches').style.display='none';document.getElementById('chatDiv').style.display='none'">Home</button>
+    <button class="font-bold text-blue-500" onclick="document.getElementById('matches').style.display='block';document.getElementById('cards').style.display='none';document.getElementById('chatDiv').style.display='none'">Matches</button>
+    <button class="font-bold text-blue-500" onclick="document.getElementById('chatDiv').style.display='block';document.getElementById('cards').style.display='none';document.getElementById('matches').style.display='none'">Chat</button>
+    <button onclick="logout()" class="font-bold text-red-500">Logout</button>
+  </nav>
+
+  <!-- Cards -->
+  <div id="cards" class="flex flex-col items-center justify-center flex-1 mt-4 mb-16 overflow-y-auto"></div>
+
+  <!-- Matches -->
+  <div id="matches" class="hidden flex flex-col items-center justify-start flex-1 mt-4 mb-16 overflow-y-auto p-4"></div>
+
+  <!-- Chat -->
+  <div id="chatDiv" class="hidden flex flex-col flex-1 mt-4 mb-16 p-4">
+    <div id="chatMessages" class="flex-1 overflow-y-auto border p-2 mb-2 bg-white rounded"></div>
+    <form id="chatInput" class="flex gap-2">
+      <input type="text" name="msg" placeholder="Type a message" class="flex-1 border p-2 rounded"/>
+      <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded">Send</button>
+    </form>
+  </div>
+</div>
+</body>
+  </html>
